@@ -26,7 +26,6 @@ End Enum
 
 Private DuplicateKeyStrategy As jsonDupKey
 
-Private Dat As Variant
 Private EOD As Long
 Private Pos As Long
 
@@ -40,7 +39,6 @@ Public Property Let DuplicateKeys(Value As jsonDupKey)
 End Property
 
 Public Function Parse(Data) As Variant
-    Dat = Data
     Pos = 1
     EOD = Len(Data)
     ' Skip byte order mark
