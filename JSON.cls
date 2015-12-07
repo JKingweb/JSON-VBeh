@@ -2,7 +2,7 @@ VERSION 1.0 CLASS
 BEGIN
   MultiUse = -1  'True
 END
-Attribute VB_Name = "JSONParser"
+Attribute VB_Name = "JSON"
 Attribute VB_GlobalNameSpace = False
 Attribute VB_Creatable = False
 Attribute VB_PredeclaredId = False
@@ -18,25 +18,145 @@ Private Enum ObjExp
     ExpKey = 4
 End Enum
 
-Public Enum jsonDupKey
+Public Enum jsonDuplicateKeyStrategy
     jsonKeyLast = 0
     jsonKeyFirst = 1
     jsonKeyHalt = 2
 End Enum
 
-Private DuplicateKeyStrategy As jsonDupKey
+Public Enum jsonFailMode
+    jsonFailStop = 0
+    jsonFailNull = 1
+    jsonFailConv = 10
+End Enum
+
+Public DuplicateKeys As jsonDuplicateKeyStrategy
+Public SerializeFailMode As jsonFailMode
+Public DateFormat As String
 
 Private EOD As Long
 Private Pos As Long
 
+Private Sub Class_Initialize()
+    DateFormat = "yyyy""-""mm""-""dd hh"":""mm"":""ss"
+End Sub
 
-Public Property Get DuplicateKeys() As jsonDupKey
-    DuplicateKeys = DuplicateKeyStrategy
-End Property
-
-Public Property Let DuplicateKeys(Value As jsonDupKey)
-    DuplicateKeyStrategy = Value
-End Property
+Public Function Serialize(Value) As String
+    Dim a As Long
+    Dim Conv As Boolean
+    Conv = (SerializeFailMode \ jsonFailConv) > 0
+    Select Case VarType(Value)
+        Case vbNull, vbEmpty
+            Serialize = "null"
+        Case vbBoolean
+            If Value Then
+                Serialize = "true"
+            Else
+                Serialize = "false"
+            End If
+        Case vbByte, vbInteger, vbLong, vbSingle, vbDouble, vbCurrency, vbDecimal
+            Serialize = CStr(Value)
+        Case vbString
+            Serialize = MakeStr(Value)
+        Case vbDate
+            If Conv Then
+                Serialize = """" & Format(Value, DateFormat) & """"
+            Else
+                Serialize = GenSerErr(100)
+            End If
+        Case vbError
+            If Conv Then
+                Serialize = CLng(Value)
+            Else
+                Serialize = GenSerErr(101)
+            End If
+        Case vbUserDefinedType
+            Serialize = GenSerErr(102)
+        Case vbDataObject
+            ' I am unclear what this type is for
+            Serialize = GenSerErr(103)
+        Case vbObject
+            Select Case TypeName(Value)
+                Case "Collection"
+                    Serialize = "["
+                    If Value.Count > 0 Then
+                        Serialize = Serialize & Serialize(Value(1))
+                        For a = 2 To Value.Count
+                            Serialize = Serialize & "," & Serialize(Value(1))
+                        Next
+                    End If
+                    Serialize = Serialize & "]"
+                Case "Dictionary"
+                    Dim Keys, Key
+                    Keys = Value.Keys
+                    Serialize = "{"
+                    If Value.Count > 0 Then
+                        Serialize = Serialize & MakeStr(Keys(1)) & ":" & Serialize(Value(Keys(1)))
+                        For a = LBound(Keys) + 1 To UBound(Keys)
+                            Serialize = Serialize & "," & MakeStr(Keys(a)) & ":" & Serialize(Value(Keys(a)))
+                        Next
+                    End If
+                    Serialize = Serialize & "}"
+                Case Else
+                    If Conv Then
+                        On Error GoTo ObjectNotConvertibleError
+                        Serialize = CStr(Value)
+                        On Error GoTo 0
+                    Else
+                        Serialize = GenSerErr(104, TypeName(Value))
+                    End If
+            End Select
+        Case Is > vbArray
+            Dim Sizes As Variant, Pointers As Variant, Member As Variant
+            Dim U As Long, L As Long
+            Dim RepBefore As Integer, RepAfter As Integer
+            Dim First As Boolean, FirstMember As Boolean
+            FirstMember = True
+            For a = 1 To 32
+                On Error GoTo DimensionSearchError
+                U = UBound(Value, a)
+                L = LBound(Value, a)
+                If L > -1 Then
+                    Push Sizes, Array(L, U)
+                    Push Pointers, -100
+                    GoTo ContinueDimensionSearch
+                End If
+StopDimensionSearch:
+                Exit For
+ContinueDimensionSearch:
+            Next
+            On Error GoTo 0
+            For Each Member In Value
+                RepBefore = 0
+                RepAfter = 0
+                For a = UBound(Pointers) To LBound(Pointers) Step -1
+                    If Pointers(a) < Sizes(a)(1) Then
+                        RepBefore = RepBefore + 1
+                        Pointers(a) = Sizes(a)(1)
+                        If a > LBound(Pointers) Then Pointers(a - 1) = Pointers(a - 1) + 1
+                    ElseIf Pointers(a) > Sizes(a)(2) Then
+                        RepBefore = RepBefore + 1
+                        RepAfter = RepAfter + 1
+                        Pointers(a) = Sizes(a)(1)
+                        If a > LBound(Pointers) Then Pointers(a - 1) = Pointers(a - 1) + 1
+                    Else
+                        Exit For
+                    End If
+                Next
+                First = RepBefore > 0
+                Pointers(UBound(Pointers)) = Pointers(UBound(Pointers)) + 1
+                Serialize = Serialize & String(RepAfter, "]") & IIf(Not FirstMember And RepBefore > 0, ",", "") & String(RepBefore, "[") & IIf(Not First, ",", "") & Serialize(Member)
+                FirstMember = False
+            Next
+            Serialize = Serialize & String(UBound(Pointers), "]")
+    End Select
+    Exit Function
+DimensionSearchError:
+    Resume StopDimensionSearch
+ObjectNotConvertibleError:
+    Serialize = GenSerErr(104, TypeName(Value))
+    Resume Next
+End Function
 
 Public Function Parse(Data) As Variant
     Pos = 1
@@ -49,7 +169,7 @@ Public Function Parse(Data) As Variant
     Select Case Mid(Data, Pos, 1)
         Case ""
             ' no data present; this is an error
-            GenError 0, Pos
+            GenParseErr 0, Pos
         Case "{"
             ' object
             Incr
@@ -70,12 +190,12 @@ Public Function Parse(Data) As Variant
             Parse = ConsumeLiteral(Data)
         Case Else
             ' anything else is illegal
-            GenError 1
+            GenParseErr 1
     End Select
     ' skip whitespace at the end
     ConsumeWhitespace Data
     ' any remaining characters are garbage; this is an error
-    If Mid(Data, Pos, 1) <> "" Then GenError 2
+    If Mid(Data, Pos, 1) <> "" Then GenParseErr 2
 End Function
 
 Public Function IsObject(Data) As Boolean
@@ -111,7 +231,7 @@ Private Function ConsumeNumber(Data) As Variant
                 Signed = True
                 Buffer = Buffer & Char
             Case 1 To 9
-                If Zero Then Incr -1: GenError 3
+                If Zero Then Incr -1: GenParseErr 3
                 If Not FirstSeen Then FirstSeen = True
                 Buffer = Buffer & Char
             Case "."
@@ -129,7 +249,7 @@ Private Function ConsumeNumber(Data) As Variant
         End Select
         Incr
     Loop Until Pos > EOD
-    If Not (FirstSeen Or Zero) Then GenError 4
+    If Not (FirstSeen Or Zero) Then GenParseErr 4
     If Fractional And Raised Then
         ConsumeNumber = CDbl(Buffer) ^ CLng(Exponent)
     ElseIf Raised Then
@@ -163,7 +283,7 @@ Private Function ConsumeExponent(Data) As Long
         End Select
         Incr
     Loop Until Pos > EOD
-    If Not FirstSeen Then GenError 5
+    If Not FirstSeen Then GenParseErr 5
     ConsumeExponent = CLng(Buffer)
 End Function
 
@@ -178,7 +298,7 @@ Private Function ConsumeLiteral(Data) As Variant
         Incr 4
         ConsumeLiteral = Null
     Else
-        GenError 6
+        GenParseErr 6
     End If
 End Function
 
@@ -214,10 +334,10 @@ Private Function ConsumeString(Data) As String
                         On Error GoTo 0
                         Incr 3
                     Case Else
-                        GenError 7
+                        GenParseErr 7
                 End Select
             Case ""
-                GenError 99
+                GenParseErr 99
             Case Else
                 ConsumeString = ConsumeString & Char
         End Select
@@ -225,7 +345,7 @@ Private Function ConsumeString(Data) As String
     Loop Until Pos > EOD
     Exit Function
 InvalidHex:
-    GenError 8
+    GenParseErr 8
 End Function
 
 Private Function ConsumeArray(Data) As Variant
@@ -235,24 +355,24 @@ Private Function ConsumeArray(Data) As Variant
     Do
         ConsumeWhitespace Data
         Char = Mid(Data, Pos, 1)
-        If Char = "" Then GenError 99
+        If Char = "" Then GenParseErr 99
         If Not ValueNext Then
             Select Case Char
                 Case "]"
                     Incr
                     Exit Do
                 Case ","
-                    If IsEmpty(Arr) Then GenError 9
+                    If IsEmpty(Arr) Then GenParseErr 9
                     ValueNext = True
                     Incr
                 Case Else
-                    If Not IsEmpty(Arr) Then GenError 10
+                    If Not IsEmpty(Arr) Then GenParseErr 10
                     ValueNext = True
             End Select
         Else
             Select Case Char
                 Case "]"
-                    GenError 9
+                    GenParseErr 9
                 Case "["
                     Incr
                     Push Arr, ConsumeArray(Data)
@@ -267,9 +387,9 @@ Private Function ConsumeArray(Data) As Variant
                 Case "t", "f", "n"
                     Push Arr, ConsumeLiteral(Data)
                 Case ","
-                    GenError 9
+                    GenParseErr 9
                 Case Else
-                    GenError 11
+                    GenParseErr 11
             End Select
             ValueNext = False
         End If
@@ -303,7 +423,7 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
     Do
         ConsumeWhitespace Data
         Char = Mid(Data, Pos, 1)
-        If Char = "" Then GenError 99
+        If Char = "" Then GenParseErr 99
         Select Case Expect
             Case ExpInit
                 Select Case Char
@@ -315,18 +435,18 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                         Incr
                         Exit Do
                     Case ","
-                        GenError 12
+                        GenParseErr 12
                     Case Else
-                        GenError 14
+                        GenParseErr 14
                 End Select
             Case ExpColon
-                If Char <> ":" Then GenError 13
+                If Char <> ":" Then GenParseErr 13
                 Incr
                 Expect = ExpValue
             Case ExpValue
                 Select Case Char
                     Case "}"
-                        GenError 12
+                        GenParseErr 12
                     Case "{"
                         Incr
                         Set Value = ConsumeObject(Data)
@@ -341,9 +461,9 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                     Case "t", "f", "n"
                         Value = ConsumeLiteral(Data)
                     Case ","
-                        GenError 12
+                        GenParseErr 12
                     Case Else
-                        GenError 14
+                        GenParseErr 14
                 End Select
                 Select Case DuplicateKeyStrategy
                     ' how to handle duplicate keys in an object is implementation-dependent;
@@ -359,7 +479,7 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                             ConsumeObject.Item(Key) = Value
                         End If
                     Case jsonKeyHalt
-                        GenError 15
+                        GenParseErr 15
                 End Select
                 Expect = ExpComma
             Case ExpComma
@@ -371,7 +491,7 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                         Incr
                         Exit Do
                     Case Else
-                        GenError 14
+                        GenParseErr 14
                 End Select
             Case ExpKey
                 Select Case Char
@@ -381,9 +501,9 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                         Expect = ExpColon
                     Case "}"
                         Stop
-                        GenError 12
+                        GenParseErr 12
                     Case Else
-                        GenError 14
+                        GenParseErr 14
                 End Select
         End Select
     Loop Until Pos > EOD
@@ -407,7 +527,22 @@ Private Sub Incr(Optional HowMuch As Long = 1)
     Pos = Pos + HowMuch
 End Sub
 
-Private Sub GenError(Code, Optional ErrPos)
+Private Function MakeStr(Str) As String
+    MakeStr = Str
+    MakeStr = Replace(MakeStr, "\", "\\")
+    MakeStr = Replace(MakeStr, """", "\""")
+    MakeStr = Replace(MakeStr, vbFormFeed, "\f")
+    MakeStr = Replace(MakeStr, vbNullChar, "\u0000")
+    MakeStr = Replace(MakeStr, vbBack, "\b")
+    MakeStr = Replace(MakeStr, vbTab, "\t")
+    MakeStr = Replace(MakeStr, vbVerticalTab, "\v")
+    MakeStr = Replace(MakeStr, vbCrLf, "\r\n")
+    MakeStr = Replace(MakeStr, vbCr, "\r")
+    MakeStr = Replace(MakeStr, vbLf, "\n")
+    MakeStr = """" & MakeStr & """"
+End Function
+
+Private Sub GenParseErr(Code, Optional ErrPos)
     Dim T As String
     Select Case Code
         Case 0:  T = "Expecting value"
@@ -431,3 +566,22 @@ Private Sub GenError(Code, Optional ErrPos)
     If IsMissing(ErrPos) Then ErrPos = Pos
     Err.Raise vbObjectError + Code, "JSONParser", T & " at offset " & ErrPos
 End Sub
+
+Private Function GenSerErr(Code As Long, Optional ObjType As String) As String
+    Dim T As String
+    Dim FailMode As jsonFailMode
+    FailMode = SerializeFailMode Mod jsonFailConv
+    Select Case Code
+        Case 100: T = "Unserializable data type: Date"
+        Case 101: T = "Unserializable data type: Error"
+        Case 102: T = "Unserializable data type: User Defined Type"
+        Case 103: T = "Unserializable data type: Data Access Object"
+        Case 104: T = "Unserializable object class: " & ObjType
+    End Select
+    Select Case FailMode
+        Case jsonFailStop
+            Err.Raise vbObjectError + Code, "JSON", T
+        Case jsonFailNull
+            GenSerErr = "null"
+    End Select
+End Function
