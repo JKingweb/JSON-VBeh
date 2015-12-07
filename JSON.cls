@@ -465,7 +465,7 @@ Private Function ConsumeObject(Data) As Scripting.Dictionary
                     Case Else
                         GenParseErr 14
                 End Select
-                Select Case DuplicateKeyStrategy
+                Select Case DuplicateKeys
                     ' how to handle duplicate keys in an object is implementation-dependent;
                     ' RFC 7159 suggests using first, using last, or erroring out, but makes
                     ' no recommendation.  This implementation's default is to use the last
