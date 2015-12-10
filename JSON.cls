@@ -91,7 +91,7 @@ Public Function Serialize(Value) As String
                     Keys = Value.Keys
                     Serialize = "{"
                     If Value.Count > 0 Then
-                        Serialize = Serialize & MakeStr(Keys(1)) & ":" & Serialize(Value(Keys(1)))
+                        Serialize = Serialize & MakeStr(Keys(LBound(Keys))) & ":" & Serialize(Value(Keys(LBound(Keys))))
                         For a = LBound(Keys) + 1 To UBound(Keys)
                             Serialize = Serialize & "," & MakeStr(Keys(a)) & ":" & Serialize(Value(Keys(a)))
                         Next
@@ -112,19 +112,20 @@ Public Function Serialize(Value) As String
             Dim RepBefore As Integer, RepAfter As Integer
             Dim First As Boolean, FirstMember As Boolean
             FirstMember = True
-            For a = 1 To 32
-                On Error GoTo DimensionSearchError
+            On Error GoTo DimensionSearchError
+            Do
+                a = a + 1
                 U = UBound(Value, a)
                 L = LBound(Value, a)
-                If L > -1 Then
+                If L > -1 And U > -1 Then
                     Push Sizes, Array(L, U)
                     Push Pointers, -100
                     GoTo ContinueDimensionSearch
                 End If
 StopDimensionSearch:
-                Exit For
+                Exit Do
 ContinueDimensionSearch:
-            Next
+            Loop
             On Error GoTo 0
             For Each Member In Value
                 RepBefore = 0
@@ -148,7 +149,11 @@ ContinueDimensionSearch:
                 Serialize = Serialize & String(RepAfter, "]") & IIf(Not FirstMember And RepBefore > 0, ",", "") & String(RepBefore, "[") & IIf(Not First, ",", "") & Serialize(Member)
                 FirstMember = False
             Next
-            Serialize = Serialize & String(UBound(Pointers), "]")
+            If Serialize <> "" Then
+                Serialize = Serialize & String(UBound(Pointers), "]")
+            Else
+                Serialize = "[]"
+            End If
     End Select
     Exit Function
 DimensionSearchError:
@@ -394,6 +399,7 @@ Private Function ConsumeArray(Data) As Variant
             ValueNext = False
         End If
     Loop Until Pos > EOD
+    If IsEmpty(Arr) Then Arr = Array()
     ConsumeArray = Arr
 End Function
 
