@@ -126,8 +126,9 @@ StopDimensionSearch:
                 Exit Do
 ContinueDimensionSearch:
             Loop
-            On Error GoTo 0
+            On Error GoTo NotInitializedError
             For Each Member In Value
+                On Error GoTo 0
                 RepBefore = 0
                 RepAfter = 0
                 For a = UBound(Pointers) To LBound(Pointers) Step -1
@@ -149,6 +150,7 @@ ContinueDimensionSearch:
                 Serialize = Serialize & String(RepAfter, "]") & IIf(Not FirstMember And RepBefore > 0, ",", "") & String(RepBefore, "[") & IIf(Not First, ",", "") & Serialize(Member)
                 FirstMember = False
             Next
+OutputArray:
             If Serialize <> "" Then
                 Serialize = Serialize & String(UBound(Pointers), "]")
             Else
@@ -161,6 +163,9 @@ DimensionSearchError:
 ObjectNotConvertibleError:
     Serialize = GenSerErr(104, TypeName(Value))
     Resume Next
+NotInitializedError:
+    On Error GoTo 0
+    Resume OutputArray
 End Function
 
 Public Function Parse(Data) As Variant
@@ -256,14 +261,27 @@ Private Function ConsumeNumber(Data) As Variant
     Loop Until Pos > EOD
     If Not (FirstSeen Or Zero) Then GenParseErr 4
     If Fractional And Raised Then
+        On Error GoTo RaisedOverflowError
         ConsumeNumber = CDbl(Buffer) ^ CLng(Exponent)
     ElseIf Raised Then
+        On Error GoTo RaisedOverflowError
         ConsumeNumber = CLng(Buffer) ^ CLng(Exponent)
+        On Error GoTo 0
     ElseIf Fractional Then
+        On Error GoTo OverflowError
         ConsumeNumber = CDbl(Buffer)
     Else
+        On Error GoTo OverflowError
         ConsumeNumber = CLng(Buffer)
+        On Error GoTo 0
     End If
+    Exit Function
+RaisedOverflowError:
+    ConsumeNumber = CDec(Buffer) ^ CDec(Exponent)
+    Resume Next
+OverflowError:
+    ConsumeNumber = CDec(Buffer)
+    Resume Next
 End Function
 
 Private Function ConsumeExponent(Data) As Long
